@@ -73,6 +73,20 @@ services:
     networks:
       - infrastructure-network
 
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "8500:80"
+    depends_on:
+      monitor:
+        condition: service_started
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+    networks:
+      - infrastructure-network
+
 networks:
   infrastructure-network:
     driver: bridge
