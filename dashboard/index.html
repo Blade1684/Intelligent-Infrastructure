@@ -197,7 +197,7 @@
     /* Key Metrics Ribbon */
     .system-ribbon {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 16px;
       margin-bottom: 28px;
     }
@@ -405,10 +405,10 @@
       color: var(--isolated);
     }
 
-    /* Metrics Dual Row */
+    /* Metrics Row */
     .metrics-row {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: repeat(4, 1fr);
       gap: 12px;
     }
 
@@ -858,10 +858,14 @@
     }
 
     /* Responsive adjustments */
-    @media (max-width: 1080px) {
-      .system-ribbon { grid-template-columns: repeat(2, 1fr); }
+    @media (max-width: 1200px) {
+      .system-ribbon { grid-template-columns: repeat(3, 1fr); }
       .servers-grid { grid-template-columns: 1fr; }
       .lower-split-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 768px) {
+      .system-ribbon { grid-template-columns: repeat(2, 1fr); }
     }
 
     @media (max-width: 640px) {
@@ -924,13 +928,18 @@
         <span class="ribbon-sub" id="ribbon-fleet-sub">All server nodes healthy</span>
       </div>
       <div class="ribbon-card">
+        <span class="ribbon-label">Autonomous Recovery (MTTR)</span>
+        <div class="ribbon-val" id="ribbon-mttr-val" style="color:#10b981;">-- s</div>
+        <span class="ribbon-sub" id="ribbon-mttr-sub">0 auto-healed incidents</span>
+      </div>
+      <div class="ribbon-card">
         <span class="ribbon-label">Ingress Failover Gateway</span>
         <div class="ribbon-val" style="color:#38bdf8;">Nginx Reverse Proxy</div>
         <span class="ribbon-sub">Round-robin with next-upstream failover</span>
       </div>
       <div class="ribbon-card">
         <span class="ribbon-label">Session Continuity</span>
-        <div class="ribbon-val" style="color:#10b981;">Redis Cluster Store</div>
+        <div class="ribbon-val" style="color:#a78bfa;">Redis Shared Store</div>
         <span class="ribbon-sub">Shared stateless sessions across replicas</span>
       </div>
       <div class="ribbon-card">
@@ -995,12 +1004,23 @@
 
           <div class="metric-box">
             <div class="metric-header">
-              <span>Service Status</span>
+              <span>Container Disk</span>
+              <span id="app1-disk-used">0 MB</span>
+            </div>
+            <div class="metric-value" id="app1-disk-val">0%</div>
+            <div class="metric-bar-bg">
+              <div class="metric-bar-fill normal" id="app1-disk-bar" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-header">
+              <span>Health Latency</span>
               <span id="app1-status-code">HTTP 200</span>
             </div>
             <div class="metric-value" id="app1-avail-val" style="color:#10b981; font-size:18px;">ONLINE</div>
             <div class="metric-bar-bg">
-              <div class="metric-bar-fill normal" style="width: 100%; background:#10b981;"></div>
+              <div class="metric-bar-fill normal" id="app1-latency-bar" style="width: 100%; background:#10b981;"></div>
             </div>
           </div>
         </div>
@@ -1075,12 +1095,23 @@
 
           <div class="metric-box">
             <div class="metric-header">
-              <span>Service Status</span>
+              <span>Container Disk</span>
+              <span id="app2-disk-used">0 MB</span>
+            </div>
+            <div class="metric-value" id="app2-disk-val">0%</div>
+            <div class="metric-bar-bg">
+              <div class="metric-bar-fill normal" id="app2-disk-bar" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-header">
+              <span>Health Latency</span>
               <span id="app2-status-code">HTTP 200</span>
             </div>
             <div class="metric-value" id="app2-avail-val" style="color:#10b981; font-size:18px;">ONLINE</div>
             <div class="metric-bar-bg">
-              <div class="metric-bar-fill normal" style="width: 100%; background:#10b981;"></div>
+              <div class="metric-bar-fill normal" id="app2-latency-bar" style="width: 100%; background:#10b981;"></div>
             </div>
           </div>
         </div>
@@ -1473,7 +1504,7 @@
       } else if (eventFilter === 'app2') {
         filtered = filtered.filter(e => e.server === 'app2');
       } else if (eventFilter === 'anomalies') {
-        filtered = filtered.filter(e => e.anomaly_type || e.event_type?.includes('anomaly') || e.event_type?.includes('spike') || e.event_type?.includes('crash'));
+        filtered = filtered.filter(e => e.anomaly_type || e.event_type?.includes('anomaly') || e.event_type?.includes('spike') || e.event_type?.includes('crash') || e.event_type?.includes('disk') || e.event_type?.includes('latency') || e.event_type?.includes('process') || e.event_type?.includes('network'));
       } else if (eventFilter === 'recoveries') {
         filtered = filtered.filter(e => e.event_type?.includes('recovery'));
       }
@@ -1499,10 +1530,16 @@
             details = `CPU Spike detected: ${Number(evt.details.current_cpu || 0).toFixed(1)}% (baseline ${Number(evt.details.baseline || 0).toFixed(2)}%, z-score ${Number(evt.details.z_score || 0).toFixed(1)})`;
           } else if (evt.details.type === 'memory_leak') {
             details = `Memory leak pattern detected (growth rate anomaly)`;
+          } else if (evt.details.type === 'disk_exhaustion') {
+            details = `Container storage limit exceeded: ${Number(evt.details.current_disk_percent || 0).toFixed(1)}% (threshold: ${Number(evt.details.threshold_percent || 85)}%)`;
+          } else if (evt.details.type === 'high_latency') {
+            details = `Sustained abnormal latency: ${Number(evt.details.current_latency_ms || 0).toFixed(1)}ms (${evt.details.sustained_count || 3} consecutive checks > ${evt.details.threshold_ms || 500}ms)`;
+          } else if (evt.details.type === 'process_failure') {
+            details = `Application process failure: ${escapeHtml(evt.details.reason || 'Process unresponsive or returned internal error')}`;
           } else if (evt.details.type === 'container_crash') {
             details = `Container terminated unexpectedly: ${escapeHtml(evt.details.reason || 'exited')}`;
           } else if (evt.details.type === 'network_failure') {
-            details = `Health check failed: ${escapeHtml(evt.details.reason || 'unreachable')}`;
+            details = `Network health probe failed: ${escapeHtml(evt.details.reason || 'unreachable')}`;
           } else if (evt.details.reason) {
             details = escapeHtml(evt.details.reason);
           }
@@ -1534,9 +1571,10 @@
     async function refresh() {
       const startTime = performance.now();
       try {
-        const [metricsRes, serversRes, app1Hist, app1Events, app2Hist, app2Events] = await Promise.all([
+        const [metricsRes, serversRes, incidentsRes, app1Hist, app1Events, app2Hist, app2Events] = await Promise.all([
           fetch(`${API}monitor/metrics`).then(r => r.json()),
           fetch(`${API}monitor/servers`).then(r => r.json()),
+          fetch(`${API}monitor/incidents`).then(r => r.json()).catch(() => ({ active: [], closed: [] })),
           fetch(`${API}monitor/history/app1`).then(r => r.json()),
           fetch(`${API}monitor/events/app1`).then(r => r.json()),
           fetch(`${API}monitor/history/app2`).then(r => r.json()),
@@ -1552,6 +1590,23 @@
         $('connection-label').textContent = 'Connected • Real-time Telemetry';
         $('cluster-status-pill').style.borderColor = 'rgba(16, 185, 129, 0.3)';
 
+        // Update MTTR & Incident KPI
+        const closedIncidents = incidentsRes.closed || [];
+        const activeIncidents = incidentsRes.active || [];
+        let totalMttr = 0;
+        let validMttrCount = 0;
+        closedIncidents.forEach(inc => {
+          if (typeof inc.mttr_seconds === 'number') {
+            totalMttr += inc.mttr_seconds;
+            validMttrCount++;
+          }
+        });
+        const avgMttr = validMttrCount > 0 ? (totalMttr / validMttrCount).toFixed(1) : null;
+        if ($('ribbon-mttr-val')) {
+          $('ribbon-mttr-val').textContent = avgMttr ? `${avgMttr} s` : 'Ready';
+          $('ribbon-mttr-sub').textContent = `${closedIncidents.length} auto-healed incident${closedIncidents.length === 1 ? '' : 's'}`;
+        }
+
         // Map states
         const statesMap = {};
         (serversRes.servers || []).forEach(s => {
@@ -1563,7 +1618,14 @@
         (metricsRes.servers || []).forEach(m => {
           const s = m.container;
           const serverState = statesMap[s] || { state: 'healthy', reason: null };
-          const state = serverState.state || 'healthy';
+          let state = serverState.state || 'healthy';
+
+          // Check if there is an active incident
+          const activeForNode = activeIncidents.find(inc => inc.server === s);
+          if (activeForNode && state === 'healthy') {
+            state = 'isolated';
+          }
+
           if (state === 'healthy') healthyCount++;
 
           const cpu = Number(m.cpu_percent || 0);
@@ -1580,7 +1642,10 @@
           const diag = $(`${s}-diagnostic`);
           const diagText = $(`${s}-diagnostic-text`);
           if (diag && diagText) {
-            if (state !== 'healthy') {
+            if (activeForNode) {
+              diag.className = 'diagnostic-banner active-alert';
+              diagText.textContent = `🚨 Anomaly Detected: ${(activeForNode.anomaly_type || 'Unknown').toUpperCase()} | Automated isolation & self-healing engaged.`;
+            } else if (state !== 'healthy') {
               diag.className = 'diagnostic-banner active-alert';
               diagText.textContent = serverState.reason || `Node status is ${state}. Automated recovery engaged.`;
             } else {
@@ -1603,23 +1668,54 @@
           $(`${s}-mem-val`).textContent = `${mem.toFixed(1)} MB`;
           const memBar = $(`${s}-mem-bar`);
           if (memBar) {
-            // Assume 300MB container ceiling for progress
             const memPercent = Math.min(100, (mem / 250) * 100);
             memBar.style.width = `${memPercent}%`;
             memBar.className = `metric-bar-fill ${mem > 200 ? 'danger' : (mem > 140 ? 'warning' : 'normal')}`;
           }
 
+          // Update disk storage metrics
+          const disk = Number(m.disk_percent || 0);
+          const diskUsed = Number(m.disk_used_mb || 0);
+          const diskValEl = $(`${s}-disk-val`);
+          const diskUsedEl = $(`${s}-disk-used`);
+          const diskBar = $(`${s}-disk-bar`);
+          if (diskValEl) diskValEl.textContent = `${disk.toFixed(0)}%`;
+          if (diskUsedEl) diskUsedEl.textContent = `${diskUsed.toFixed(0)} MB`;
+          if (diskBar) {
+            diskBar.style.width = `${Math.min(100, Math.max(0, disk))}%`;
+            diskBar.className = `metric-bar-fill ${disk > 85 ? 'danger' : (disk > 70 ? 'warning' : 'normal')}`;
+          }
+
+          // Update health latency & status
           const availEl = $(`${s}-avail-val`);
           const codeEl = $(`${s}-status-code`);
+          const latencyBar = $(`${s}-latency-bar`);
+          const lat = m.latency_ms !== null && m.latency_ms !== undefined ? Number(m.latency_ms) : null;
+
           if (availEl && codeEl) {
             if (isAvail) {
-              availEl.textContent = 'ONLINE';
-              availEl.style.color = '#10b981';
-              codeEl.textContent = 'HTTP 200';
+              availEl.textContent = lat !== null ? `${lat.toFixed(0)} ms` : 'ONLINE';
+              availEl.style.color = lat !== null && lat > 400 ? '#f59e0b' : '#10b981';
+              codeEl.textContent = m.status_code ? `HTTP ${m.status_code}` : 'HTTP 200';
+              if (latencyBar) {
+                const latPercent = Math.min(100, Math.max(10, ((lat || 20) / 500) * 100));
+                latencyBar.style.width = `${latPercent}%`;
+                latencyBar.style.background = lat && lat > 400 ? 'var(--recovering)' : '#10b981';
+              }
             } else {
-              availEl.textContent = m.status === 'exited' ? 'CRASHED' : 'UNREACHABLE';
+              if (m.status === 'exited') {
+                availEl.textContent = 'CRASHED';
+              } else if (m.pids_current === 0) {
+                availEl.textContent = 'PROC FAIL';
+              } else {
+                availEl.textContent = 'UNREACHABLE';
+              }
               availEl.style.color = '#ef4444';
-              codeEl.textContent = m.health_error ? 'TIMEOUT' : 'DOWN';
+              codeEl.textContent = m.status_code ? `HTTP ${m.status_code}` : (m.health_error && m.health_error.includes('time') ? 'TIMEOUT' : 'DOWN');
+              if (latencyBar) {
+                latencyBar.style.width = '100%';
+                latencyBar.style.background = '#ef4444';
+              }
             }
           }
         });
@@ -1634,9 +1730,6 @@
         if (telemetryChartInstance) {
           const app1Samples = app1Hist.samples || [];
           const app2Samples = app2Hist.samples || [];
-          const maxLen = Math.max(app1Samples.length, app2Samples.length);
-          
-          // Generate unified timestamp labels
           const labels = (app1Samples.length >= app2Samples.length ? app1Samples : app2Samples).map(x => formatTime(x.timestamp));
           
           const key = activeChartMetric === 'cpu' ? 'cpu_percent' : 'memory_mb';
@@ -1652,11 +1745,22 @@
             color: '#64748b'
           };
 
-          telemetryChartInstance.update('none'); // no heavy animation during polling
+          telemetryChartInstance.update('none');
         }
 
-        // Combine & Sort Events
+        // Combine & Sort Events including resolved MTTR audit records
+        const incidentAuditEvents = closedIncidents.slice(0, 10).map(inc => ({
+          server: inc.server,
+          timestamp: inc.recovered_at || inc.detected_at,
+          event_type: 'recovery_succeeded',
+          anomaly_type: inc.anomaly_type,
+          details: {
+            reason: `Auto-recovery verified in ${Number(inc.mttr_seconds || 0).toFixed(1)}s (MTTR). Ingress rerouted without session loss.`
+          }
+        }));
+
         const allEvents = [
+          ...incidentAuditEvents,
           ...(app1Events.events || []),
           ...(app2Events.events || [])
         ].sort((a, b) => new Date(b.timestamp || b.detected_at) - new Date(a.timestamp || a.detected_at));

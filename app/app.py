@@ -4,6 +4,7 @@ import redis
 import threading
 import time
 import multiprocessing
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, session
 from flask_session import Session
@@ -45,6 +46,36 @@ memory_lock = threading.Lock()
 cpu_processes = []
 
 cpu_process_lock = threading.Lock()
+
+
+# ============================================================
+# LATENCY INJECTION STATE
+# ============================================================
+
+# Shared mutable state for controlled latency injection.
+# expires_at is a float epoch-second timestamp; 0 means inactive.
+_latency_injection = {
+    "delay_ms": 0.0,
+    "expires_at": 0.0
+}
+
+_latency_lock = threading.Lock()
+
+MAX_LATENCY_MS = 5000
+DEFAULT_LATENCY_DURATION_S = 30
+
+
+def get_active_latency_ms():
+    """
+    Return the currently injected delay in milliseconds if the
+    injection window has not yet expired, otherwise return 0.
+
+    Thread-safe; safe to call on every health-probe request.
+    """
+    with _latency_lock:
+        if _latency_injection["expires_at"] > time.monotonic():
+            return _latency_injection["delay_ms"]
+        return 0.0
 
 
 def parse_bounded_integer(data, field, default, minimum, maximum):
@@ -365,6 +396,12 @@ def session_info():
 @app.route("/health")
 def health():
 
+    # Apply injected latency before responding so the monitor's
+    # HTTP probe measures a realistic elevated response time.
+    delay = get_active_latency_ms()
+    if delay > 0:
+        time.sleep(delay / 1000.0)
+
     try:
         app.config["SESSION_REDIS"].ping()
     except redis.RedisError as error:
@@ -564,6 +601,91 @@ def clear_memory_stress():
         "server":
             SERVER_NAME
 
+    })
+
+
+# ============================================================
+# LATENCY STRESS ENDPOINT
+# ============================================================
+
+@app.route(
+    "/stress/latency",
+    methods=["POST"]
+)
+def stress_latency():
+    """
+    Activate a controlled response delay on the /health endpoint.
+
+    Accepts JSON body or query-string parameters:
+      delay_ms   float  Delay in milliseconds (0 – 5000).  Required.
+      duration_s int    How long the delay stays active (1 – 120 s).
+                        Defaults to 30 s so it cannot be left on indefinitely.
+    """
+    data = request.get_json(silent=True) or {}
+
+    # Accept delay_ms from JSON body or query string
+    raw_delay = data.get("delay_ms", request.args.get("delay_ms", None))
+
+    if raw_delay is None:
+        return jsonify({"error": "delay_ms is required"}), 400
+
+    try:
+        delay_ms = float(raw_delay)
+    except (TypeError, ValueError):
+        return jsonify({"error": "delay_ms must be a number"}), 400
+
+    if delay_ms < 0:
+        return jsonify(
+            {"error": "delay_ms must be >= 0"}
+        ), 400
+
+    if delay_ms > MAX_LATENCY_MS:
+        return jsonify(
+            {"error": f"delay_ms must be <= {MAX_LATENCY_MS}"}
+        ), 400
+
+    raw_duration = data.get("duration_s", request.args.get("duration_s", DEFAULT_LATENCY_DURATION_S))
+    try:
+        duration_s = int(raw_duration)
+    except (TypeError, ValueError):
+        duration_s = DEFAULT_LATENCY_DURATION_S
+    duration_s = max(1, min(duration_s, 120))
+
+    expires_at = time.monotonic() + duration_s
+
+    with _latency_lock:
+        _latency_injection["delay_ms"] = delay_ms
+        _latency_injection["expires_at"] = expires_at
+
+    # Human-readable wall-clock expiry for the response
+    wall_expires = datetime.now(timezone.utc).isoformat()
+
+    return jsonify({
+        "message": "Latency injection active",
+        "server": SERVER_NAME,
+        "delay_ms": delay_ms,
+        "duration_s": duration_s,
+        "expires_in_s": duration_s
+    })
+
+
+# ============================================================
+# RESET LATENCY INJECTION
+# ============================================================
+
+@app.route(
+    "/stress/latency/reset",
+    methods=["POST"]
+)
+def reset_latency():
+    """Immediately disable any active latency injection."""
+    with _latency_lock:
+        _latency_injection["delay_ms"] = 0.0
+        _latency_injection["expires_at"] = 0.0
+
+    return jsonify({
+        "message": "Latency injection cleared",
+        "server": SERVER_NAME
     })
 
 

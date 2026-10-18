@@ -3,8 +3,13 @@ services:
     build: ./monitor
     ports:
       - "5001:5001"
+    environment:
+      LATENCY_THRESHOLD_MS: "500.0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./monitor/monitor.py:/monitor/monitor.py
+      - ./monitor/detector.py:/monitor/detector.py
+      - ./monitor/recovery.py:/monitor/recovery.py
     depends_on:
       redis:
         condition: service_healthy
@@ -77,6 +82,9 @@ services:
     build: ./dashboard
     ports:
       - "8500:80"
+    volumes:
+      - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro
+      - ./dashboard/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       monitor:
         condition: service_started

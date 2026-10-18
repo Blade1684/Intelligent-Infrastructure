@@ -2,3 +2,7 @@ Flask
 docker
 redis
 requests
+scikit-learn
+pandas
+numpy
+pytest
