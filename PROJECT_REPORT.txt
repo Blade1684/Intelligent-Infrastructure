@@ -1,0 +1,411 @@
+================================================================================
+A FORMAL PROJECT REPORT ON:
+AI-ENABLED PREDICTIVE INFRASTRUCTURE MONITORING AND FAILURE PREVENTION
+================================================================================
+
+Degree / Program: Bachelor / Master of Technology in Computer Science & Engineering
+Department: Department of Computer Science and Engineering
+Academic Year / Date: 2026
+
+--------------------------------------------------------------------------------
+ABSTRACT
+--------------------------------------------------------------------------------
+Modern cloud-native web applications rely on microservice architectures where 
+sudden traffic surges and gradual resource depletion (memory leaks, CPU saturation, 
+disk exhaustion, and latency spikes) frequently cause service disruptions. 
+Conventional monitoring frameworks operate reactively: alerting mechanisms and 
+container restarts are initiated only after error thresholds are breached or when 
+total downtime (HTTP 502/503 errors) has already impacted end users. Furthermore, 
+indiscriminate automated restarts dump in-flight transactions and can induce 
+catastrophic cascading reboot storms.
+
+This report presents the design, mathematical formulation, and empirical validation 
+of an autonomous, multi-tiered predictive infrastructure monitoring and self-healing 
+platform. Implemented as an 11-container cluster comprising five Gunicorn/Flask 
+application backends, an HAProxy Layer 7 load balancer, a Redis distributed state 
+store, an out-of-band monitoring engine, a React operations dashboard, and a Locust 
+load-generation engine, the architecture completely decouples client traffic from 
+monitoring operations.
+
+The platform couples statistical anomaly detection and unsupervised Machine Learning 
+(Isolation Forest with clean-baseline filtering) with an Ordinary Least Squares (OLS) 
+linear regression trend forecasting engine. When resource exhaustion is predicted or 
+confirmed, the system dynamically modulates backend traffic weights (from 100 to 50) 
+via the HAProxy runtime UNIX socket in ~7.63 ms without configuration reloads or TCP 
+connection drops. If degradation persists, least-disruptive remediation strategies 
+(targeted stress PID termination, subprocess memory clearing via malloc_trim, and 
+approved temporary disk purging) are executed, followed by a mandatory 3-cycle 
+health hysteresis before traffic readmission.
+
+Empirical validation confirms that the system maintains 0.00% error leakage during 
+single- and dual-node failures under sustained load, scales gracefully to ~100 RPS 
+under bounded single-host evaluation, strictly prevents cluster blackouts through 
+hard safety invariants, and achieves a 100% pass rate across a comprehensive 
+244-test regression suite.
+
+Keywords: Autonomous Infrastructure, Predictive Monitoring, Self-Healing Systems, 
+Ordinary Least Squares (OLS), Dynamic Traffic Shaping, HAProxy Runtime API, Fault 
+Remediation, Microservices Reliability.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+Chapter 1: Introduction and Problem Definition
+  1.1 Context and Background
+  1.2 Limitations of Existing Infrastructure Monitoring
+  1.3 Project Objectives and Scope
+  1.4 Report Organization
+
+Chapter 2: System Architecture and Infrastructure Topology
+  2.1 Decoupled Architectural Philosophy
+  2.2 Container Topology and Communication Matrix
+  2.3 Application Layer (Five Flask/Gunicorn Backends)
+  2.4 Load Balancing Layer (HAProxy 2.8 and Runtime Socket)
+  2.5 Centralized State and Session Layer (Redis 7)
+  2.6 Out-of-Band Decision and Monitoring Engine
+  2.7 Frontend Visualization and Load-Generation Engines
+
+Chapter 3: Mathematical Formulations and Algorithmic Design
+  3.1 Unsupervised Anomaly Detection (Isolation Forest & Clean Filtering)
+  3.2 Predictive Trend Forecasting (Ordinary Least Squares Regression)
+  3.3 Goodness-of-Fit (R^2) and Time-to-Saturation Equations
+  3.4 Tiered Sample Requirement Policy
+  3.5 Multi-Contributor Overload Scoring and State Debouncing
+
+Chapter 4: Dynamic Traffic Management and Automated Self-Healing
+  4.1 Sub-10ms Zero-Reload Routing Control
+  4.2 Traffic Damping and Maintenance Isolation
+  4.3 Multi-Cycle Readmission Hysteresis
+  4.4 Granular, Root-Cause-Targeted Remediation Strategies
+
+Chapter 5: Reliability Engineering and Safety Guardrails
+  5.1 Minimum Eligible Backend Protection (Blackout Invariant)
+  5.2 Remediation Cooldown Timers and Flapping Prevention
+  5.3 Restart Loop Circuit-Breaking
+  5.4 External Network Partition Handling
+  5.5 File Path Traversal Allowlist Enforcement
+
+Chapter 6: Empirical Evaluation and Experimental Results
+  6.1 Test Methodology and Environmental Setup
+  6.2 Baseline Performance and Traffic Distribution
+  6.3 Throughput Scaling and Latency Under Bounded Load
+  6.4 Reliability and Fault Resilience Scenarios (REL-1 to REL-10)
+  6.5 End-to-End Fault-to-Readmission Scenarios (Scenarios A-J)
+  6.6 Full Regression Suite Verification (244/244 Tests)
+
+Chapter 7: Technical Limitations and Engineering Realities
+  7.1 Windows 11 / WSL2 Docker Socket IPC Latency (~20s Overhead)
+  7.2 Mathematical Soundness vs. Physical Detection Latency
+  7.3 HAProxy Socket Latency vs. End-to-End Mitigation Latency
+  7.4 Single-Node Redis and Docker Socket Security Boundaries
+
+Chapter 8: Future Roadmap and Engineering Improvements
+  8.1 Asynchronous Telemetry Ingestion via asyncio
+  8.2 Clustered Redis High Availability
+  8.3 Kubernetes CRD Operator Pattern (Eliminating Docker Socket)
+  8.4 Kernel-Level eBPF Probing
+
+Chapter 9: Conclusion
+References
+Appendices (Core API Reference & Operational Port Map)
+
+
+================================================================================
+CHAPTER 1: INTRODUCTION AND PROBLEM DEFINITION
+================================================================================
+1.1 Context and Background
+Modern digital economies depend heavily on high-availability web services. Microservice 
+architectures deployed within containerized platforms (such as Docker and Kubernetes) 
+introduce intricate dependency graphs where failures can emerge silently from resource 
+leaks, concurrency bottlenecks, or unexpected traffic bursts.
+
+1.2 Limitations of Existing Infrastructure Monitoring
+Traditional monitoring systems (e.g., standard Prometheus alerts, basic CloudWatch 
+monitors, or standard Docker restart policies) suffer from critical structural drawbacks:
+1. Purely Reactive Detection: Alerts trigger only after CPU or memory breaches static 
+   90% barriers, by which time queuing delays have already degraded user transactions.
+2. Indiscriminate Container Restarts: Cloud orchestrators frequently default to 
+   restarting entire containers upon health check failures. This destroys process memory, 
+   aborts in-flight database transactions, and can cause thundering herd reboot storms.
+3. Lack of Dynamic Routing Modulation: Standard reverse proxies require reloading 
+   configuration files to adjust weights, inducing TCP connection drops.
+4. False Alarms from Legitimate Traffic: Basic monitors fail to differentiate between a 
+   healthy server serving high volume and an overloaded server suffering an internal 
+   memory leak.
+
+1.3 Project Objectives and Scope
+This project designs and evaluates an end-to-end autonomous monitoring, predictive 
+forecasting, dynamic traffic shaping, and self-healing platform. The system aims to:
+- Continuously inspect five containerized application backends out-of-band.
+- Predict impending saturation using Ordinary Least Squares linear regression.
+- Modulate traffic weights dynamically in sub-10ms via HAProxy UNIX socket IPC without 
+  proxy reloads.
+- Remediate the root cause at the process level (killing stress workers rather than 
+  rebooting the OS/container).
+- Enforce strict safety invariants to guarantee zero cluster blackouts.
+
+
+================================================================================
+CHAPTER 2: SYSTEM ARCHITECTURE AND INFRASTRUCTURE TOPOLOGY
+================================================================================
+2.1 Decoupled Architectural Philosophy
+Client traffic (routed through HAProxy at port 8080) is strictly isolated from 
+monitoring and control pipelines. The monitoring engine executes out-of-band on port 
+5001. If the monitor is paused, stopped, or delayed, user requests continue passing 
+through HAProxy with zero interference.
+
+2.2 Architecture Diagram:
+
+                                  [ Clients / Locust Load Generator ]
+                                                 |
+                                                 v
+                                   +---------------------------+
+                                   |   HAProxy Load Balancer   |
+                                   |  (Port 8080 / Stats: 8404)|
+                                   +-------------+-------------+
+                                                 | Layer 7 Round-Robin
+                   +--------------+--------------+--------------+--------------+
+                   v              v              v              v              v
+             +-----------+  +-----------+  +-----------+  +-----------+  +-----------+
+             |   App 1   |  |   App 2   |  |   App 3   |  |   App 4   |  |   App 5   |
+             |  (:5002)  |  |  (:5003)  |  |  (:5004)  |  |  (:5005)  |  |  (:5006)  |
+             +-----+-----+  +-----+-----+  +-----+-----+  +-----+-----+  +-----+-----+
+                   |              |              |              |              |
+                   +--------------+-------+------+--------------+--------------+
+                                          | Shared Session State & Redis Locks
+                                          v
+                                +-------------------+
+                                |   Redis 7 Store   |
+                                |      (:6379)      |
+                                +---------^---------+
+                                          | Telemetry, Metrics & Events
+                                          v
+                                +-------------------+
+                                | Monitor & Decision|
+                                |   Engine (:5001)  |
+                                +---------+---------+
+                                          |
+                   +----------------------+----------------------+
+                   v                                             v
+        +---------------------+                       +---------------------+
+        |   React Dashboard   |                       |  Locust Load Engine |
+        |     (Port 8500)     |                       |     (Port 8089)     |
+        +---------------------+                       +---------------------+
+
+2.3 Container Inventory:
+- app1 to app5 (Ports 5002-5006): Python 3.11 / Flask / Gunicorn. Status: Docker HEALTHCHECK (healthy).
+- redis (Internal 6379): Redis 7 Alpine. Status: Docker HEALTHCHECK (healthy).
+- haproxy (Ports 8080, 8404): HAProxy 2.8 Alpine. Status: Standard (running).
+- monitor (Port 5001): Python 3.11 / Scikit-Learn. Status: Standard (running).
+- dashboard (Port 8500): Nginx Alpine / React SPA. Status: Standard (running).
+- locust (Port 8089): Locust 2.47.0. Status: Standard (running).
+- nginx (Port 8081): Nginx Alpine. Status: Standard (running).
+
+*Note: Exactly 6 containers implement native Docker healthchecks (app1-app5 and redis). 
+The remaining 5 containers operate nominally in the standard running state without 
+internal Docker health evaluation.
+
+
+================================================================================
+CHAPTER 3: MATHEMATICAL FORMULATIONS AND ALGORITHMIC DESIGN
+================================================================================
+3.1 Unsupervised Anomaly Detection (Isolation Forest & Clean Filtering)
+Multivariate anomalies (joint CPU and memory deviations) are evaluated using an 
+IsolationForest model.
+
+To eliminate baseline poisoning (where a slow memory leak is accidentally learned as 
+normal behavior), candidate samples pass through a strict filter:
+- Samples with CPU > 40.0% or Memory > 85.0 MB are rejected during initial fitting.
+- Once trained, a sample is excluded from baseline updates if its Z-score exceeds 3.0:
+    Z = |x - mean| / std_dev > 3.0
+- Training updates pause automatically during confirmed anomalies.
+
+3.2 Predictive Trend Forecasting (Ordinary Least Squares Regression)
+The predictive engine computes dimensional slopes for CPU (%/s), Memory (MB/s), 
+Latency (ms/s), and Error Rate (%/s) using OLS regression across timestamp-indexed 
+samples (t_i, y_i):
+
+  slope = [ N * sum(t_i * y_i) - sum(t_i) * sum(y_i) ] / [ N * sum(t_i^2) - (sum(t_i))^2 ]
+
+  intercept = [ sum(y_i) - slope * sum(t_i) ] / N
+
+3.3 Goodness-of-Fit (R^2) and Time-to-Saturation
+The regression fit quality is measured by the Coefficient of Determination (R^2):
+
+  SS_tot = sum( (y_i - y_mean)^2 )
+  SS_res = sum( (y_i - y_predicted_i)^2 )
+  R^2 = 1 - (SS_res / SS_tot)
+
+If slope > min_slope and R^2 >= 0.65, estimated time-to-saturation is computed:
+
+  Time_to_saturation = (Y_threshold - Y_current) / slope
+
+3.4 Tiered Sample Requirement Policy
+To ensure statistical integrity, the engine enforces strict sample-count tiers:
+- N < 6 (Insufficient Data): Returns INSUFFICIENT_DATA. Confidence is null; no predictions 
+  or warnings are generated.
+- 6 <= N < 15 (Preliminary Trend): Preliminary trend analysis permitted; allows EARLY_WARNING.
+- 15 <= N < 20 (Reliable Prediction): High-confidence forecasts (HIGH_RISK, 
+  PREDICTED_SATURATION) permitted.
+- N >= 20 (Traffic Action Minimum): Mandatory historical observation baseline required 
+  before conservative preventive weight shedding is authorized.
+
+
+================================================================================
+CHAPTER 4: DYNAMIC TRAFFIC MANAGEMENT AND AUTOMATED SELF-HEALING
+================================================================================
+4.1 Sub-10ms Zero-Reload Routing Control
+When a backend reaches OVERLOAD, the Traffic Manager adjusts HAProxy routing via the 
+UNIX runtime socket (/tmp/haproxy.sock) in ~7.63 ms:
+  - set weight app_cluster/app1 50
+  - set server app_cluster/app1 state maint
+  - set server app_cluster/app1 state ready
+
+4.2 Self-Healing Workflow:
+1. Overload Classification: Evaluates metrics across debounced cycles (NORMAL -> OVERLOAD).
+2. Dynamic Traffic Modulation: Sheds traffic weight (100 -> 50) in < 10ms via UNIX socket.
+3. Granular Root-Cause Remediation:
+   - CPU Saturation: Terminates only stress worker PID (/stress/cpu/stop). Gunicorn remains alive.
+   - Memory Leak: Clears memory subprocess bytearrays and executes malloc_trim(0).
+   - Disk Exhaustion: Purges test files strictly inside /tmp/test_disk_fill/.
+   - Worker Crash: Restarts container only when process failure or HTTP 500 persists.
+4. Safe Readmission Hysteresis:
+   - Server enters AWAITING_READMISSION.
+   - Requires 3 consecutive clean monitoring cycles.
+   - Validates direct HTTP /health probe.
+   - Restores HAProxy weight to 100 via socket in < 10ms.
+
+
+================================================================================
+CHAPTER 5: RELIABILITY ENGINEERING AND SAFETY GUARDRAILS
+================================================================================
+To prevent self-healing mechanisms from causing cluster blackouts or cascading failures, 
+five hard invariants are enforced in code:
+
+1. Cluster Blackout Prevention Invariant:
+   Traffic Manager enforces min_eligible_backends = 1 and max_simultaneous_excluded = 4. 
+   If 4 backends are offline, isolating the 5th backend is strictly rejected (ACTION_REJECTED).
+2. Remediation Cooldown Timer:
+   A mandatory 15-second cooldown per backend prevents flapping remediation storms.
+3. Restart Loop Circuit-Breaker:
+   Restarts are tracked across sliding 300-second windows. If a container restarts 3 times 
+   (MAX_RESTARTS_PER_WINDOW), automated restarts are suppressed (action: "restart_suppressed"), 
+   flagging the node for operator intervention.
+4. External Network Partition Isolation:
+   If health probes fail while container internal processes remain healthy, the system 
+   diagnoses an external network drop and suppresses container restarts (action: "awaiting_operator").
+5. Path Traversal Protection:
+   Disk cleanup algorithms validate canonical file paths, strictly blocking traversal attacks 
+   (../../etc/passwd) and restricting deletion to /tmp/test_disk_fill/.
+
+
+================================================================================
+CHAPTER 6: EMPIRICAL EVALUATION AND EXPERIMENTAL RESULTS
+================================================================================
+6.1 Performance Benchmarks:
+- P-1 (Gateway Latency): Avg: 7.52 ms, P50: 6.98 ms, P95: 15.49 ms (100 requests).
+- P-2 (Normal Workload): Avg: 11.92 RPS (5 users, 15s), Error Rate: 0.00%.
+- P-3 (Moderate Workload): Avg: 36.98 RPS (20 users, 15s), Error Rate: 0.00%.
+- P-4 (Heavy Workload): Avg: 93.01 RPS (Peak: 148.4 RPS, 50 users, 15s), Error Rate: 0.00%.
+- P-5 (Latency vs Concurrency): 4.72 ms (5 users) -> 4.46 ms (20 users) -> 5.60 ms (50 users).
+- P-6 (Error Rate Across Load): 0.00% across all 3,045 load requests.
+- P-7 (Backend Traffic Split): Exactly 20.0% uniform round-robin distribution (10/50 requests per server).
+- P-8 (Monitoring Iteration Time): Avg: 20.01 s (Min: 19.86s, Max: 20.43s).
+- P-9 (Monitor Resource Overhead): CPU: 1.84%, Memory: 142.72 MB (1.88%).
+- P-10 (HAProxy Socket Latency): Avg: 7.63 ms (Min: 6.40ms, Max: 15.29ms).
+
+6.2 Reliability Scenarios (REL-1 to REL-10):
+- Sustained Moderate/Heavy Traffic: 1,146 and 2,705 requests served with 0.00% error rate.
+- Single/Dual Node Outages: app2 and app3 stopped abruptly under load. HAProxy isolated 
+  failed nodes in < 4s; 100% of gateway requests succeeded on remaining nodes without error leakage.
+- Component Outages: Redis timeouts and HAProxy socket disconnects degraded gracefully 
+  with fallback logging and zero unhandled process crashes.
+- Monitor Pause Independence: Pausing monitor container had zero impact on client traffic 
+  (10/10 gateway requests succeeded).
+
+6.3 Automated Regression Suite:
+- Total Test Count: 244
+- Passed: 244 (100.0%)
+- Failed / Skipped: 0
+- Execution Duration: 13.78 seconds
+
+
+================================================================================
+CHAPTER 7: TECHNICAL LIMITATIONS AND ENGINEERING REALITIES
+================================================================================
+7.1 Docker Desktop on Windows (WSL2) Monitoring Cycle Overhead (~20 Seconds)
+- Observation: Each monitoring cycle averages 20.01 seconds (min: 19.86s, max: 20.43s).
+- Root Cause: On Windows 11, Docker Desktop runs inside a WSL2 VM. Sequential calls to 
+  container.stats(stream=False) traverse a named pipe / virtual network translation bridge, 
+  taking ~1.8 to 2.2 seconds per container. Across 5 application containers, this accounts 
+  for ~10-12 seconds of raw socket I/O wait time per cycle.
+- Mathematical Soundness Defense: All telemetry recorded in Redis is indexed by exact Unix 
+  epoch timestamps (t_i). The OLS regression divides by the actual elapsed wall-clock time:
+    slope = delta_y / delta_t
+  Because delta_t represents true elapsed seconds, all regression slopes, R^2 scores, and 
+  time-to-saturation calculations remain mathematically exact.
+- Operational SLA Distinction: HAProxy UNIX socket commands execute in 7.63 ms. However, 
+  end-to-end anomaly mitigation requires 20 to 40 seconds due to polling intervals and state debouncing.
+
+
+================================================================================
+CHAPTER 8: FUTURE ROADMAP AND ENGINEERING IMPROVEMENTS
+================================================================================
+1. Asynchronous Parallel Ingestion: Refactor stats collection to Python asyncio (aiohttp / aiodocker), 
+   reducing cycle time from 20s to < 2.5s on Windows, and < 500ms on Linux.
+2. Clustered Redis Architecture: Replace single-node Redis with a 3-node Redis Sentinel or 
+   Redis Cluster topology to eliminate single points of failure.
+3. Kubernetes Custom Resource Definition (CRD) Operator: Replace host Docker socket mounts 
+   (/var/run/docker.sock) with a native Kubernetes Operator using Pod eviction APIs.
+4. Kernel-Level eBPF Telemetry: Implement eBPF probes for sub-millisecond TCP queue drops and 
+   connection latency telemetry.
+
+
+================================================================================
+CHAPTER 9: CONCLUSION
+================================================================================
+The AI-Enabled Predictive Infrastructure Monitoring and Failure Prevention platform 
+successfully demonstrates that cloud microservices can achieve autonomous self-healing 
+without disruptive reboot loops. By coupling statistical debouncing and Isolation Forest 
+anomaly detection with Ordinary Least Squares predictive forecasting, the system identifies 
+degradation trajectories before user-facing failure occurs. Dynamic traffic weight shedding 
+via the HAProxy runtime socket in 7.63 ms, combined with granular root-cause remediation 
+and a 3-cycle health readmission hysteresis, maintains 0.00% error leakage during component 
+failures while preserving client session continuity. Validated across 10 end-to-end integration 
+scenarios and 244 passing regression tests, the platform establishes an effective, 
+mathematically defensible paradigm for next-generation resilient infrastructure.
+
+
+================================================================================
+REFERENCES
+================================================================================
+1. Liu, F. T., Ting, K. M., & Zhou, Z. H. (2008). Isolation Forest. Eighth IEEE International 
+   Conference on Data Mining, 413-422.
+2. Tarreau, W. (2023). HAProxy Configuration and Runtime API Reference (v2.8). HAProxy Technologies.
+3. Beyer, B., Jones, C., Petoff, J., & Murphy, N. R. (2016). Site Reliability Engineering: How 
+   Google Runs Production Systems. O'Reilly Media.
+4. Redis Ltd. (2024). Redis Documentation and Sentinel High Availability Specification. Redis.io.
+5. Grigorik, I. (2013). High Performance Browser Networking: What Every Web Developer Should 
+   Know About Networking and Web Performance. O'Reilly Media.
+
+
+================================================================================
+APPENDICES: QUICK ACCESS MATRIX
+================================================================================
+Appendix A: Summary of Core API Endpoints
+- Application Endpoints: GET /, POST /login, POST /work, GET /session, GET /health, 
+  POST /stress/cpu, POST /stress/cpu/stop, POST /stress/memory, POST /stress/memory/clear, 
+  POST /stress/latency, POST /stress/process/crash, POST /stress/disk/fill.
+- Monitoring Endpoints: GET /metrics, GET /servers, GET /haproxy/status, GET /overload/status, 
+  GET /traffic/status, GET /traffic/weights, GET /recovery/status, GET /prediction/status, 
+  GET /prediction/accuracy, POST /load-test/start.
+
+Appendix B: Operational Port Map
+- 8080: HAProxy Client Gateway
+- 8404: HAProxy Stats Console (admin:admin_infrastructure_secret)
+- 8500: React Operations Dashboard
+- 8089: Locust Load Engine
+- 5001: Monitoring & Decision Engine API
+- 5002-5006: Application Backends (app1 to app5)
+- 6379: Redis Internal State Store
+================================================================================

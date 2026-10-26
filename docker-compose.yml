@@ -10,6 +10,17 @@ services:
       - ./monitor/monitor.py:/monitor/monitor.py
       - ./monitor/detector.py:/monitor/detector.py
       - ./monitor/recovery.py:/monitor/recovery.py
+      - ./monitor/haproxy_client.py:/monitor/haproxy_client.py
+      - ./monitor/load_test_client.py:/monitor/load_test_client.py
+      - ./monitor/overload_detector.py:/monitor/overload_detector.py
+      - ./monitor/traffic_manager.py:/monitor/traffic_manager.py
+      - ./monitor/prediction_engine.py:/monitor/prediction_engine.py
+      - ./tests:/monitor/tests
+      - ./app:/monitor/app
+      - ./haproxy:/monitor/haproxy
+      - ./locust:/monitor/locust:ro
+      - ./docker-compose.yml:/monitor/docker-compose.yml:ro
+      - haproxy-sock:/tmp/haproxy
     depends_on:
       redis:
         condition: service_healthy
@@ -54,6 +65,63 @@ services:
     networks:
       - infrastructure-network
 
+  app3:
+    build: ./app
+    ports:
+      - "5004:5000"
+    environment:
+      SERVER_NAME: "Server-3"
+      REDIS_HOST: "redis"
+      SECRET_KEY: "shared-development-secret"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - infrastructure-network
+
+  app4:
+    build: ./app
+    ports:
+      - "5005:5000"
+    environment:
+      SERVER_NAME: "Server-4"
+      REDIS_HOST: "redis"
+      SECRET_KEY: "shared-development-secret"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - infrastructure-network
+
+  app5:
+    build: ./app
+    ports:
+      - "5006:5000"
+    environment:
+      SERVER_NAME: "Server-5"
+      REDIS_HOST: "redis"
+      SECRET_KEY: "shared-development-secret"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - infrastructure-network
+
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -64,10 +132,32 @@ services:
     networks:
       - infrastructure-network
 
+  haproxy:
+    image: haproxy:2.8-alpine
+    ports:
+      - "8080:80"
+      - "8404:8404"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - haproxy-sock:/tmp
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+      app3:
+        condition: service_healthy
+      app4:
+        condition: service_healthy
+      app5:
+        condition: service_healthy
+    networks:
+      - infrastructure-network
+
   nginx:
     image: nginx:alpine
     ports:
-      - "8080:80"
+      - "8081:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
@@ -88,13 +178,38 @@ services:
     depends_on:
       monitor:
         condition: service_started
+      haproxy:
+        condition: service_started
       app1:
         condition: service_healthy
       app2:
         condition: service_healthy
+      app3:
+        condition: service_healthy
+      app4:
+        condition: service_healthy
+      app5:
+        condition: service_healthy
     networks:
       - infrastructure-network
+
+  locust:
+    image: locustio/locust:2.47.0
+    container_name: intelligent-infrastructure-locust-1
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./locust:/mnt/locust
+    command: -f /mnt/locust/locustfile.py --config /mnt/locust/locust.conf
+    depends_on:
+      - haproxy
+    networks:
+      - infrastructure-network
+    restart: unless-stopped
 
 networks:
   infrastructure-network:
     driver: bridge
+
+volumes:
+  haproxy-sock:

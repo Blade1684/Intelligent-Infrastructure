@@ -69,6 +69,16 @@ def _reset_injection():
     with _app_module._latency_lock:
         _app_module._latency_injection["delay_ms"] = 0.0
         _app_module._latency_injection["expires_at"] = 0.0
+    with _app_module._process_failure_lock:
+        _app_module._process_failure_injection["active"] = False
+        _app_module._process_failure_injection["expires_at"] = 0.0
+        _app_module._process_failure_injection["reason"] = ""
+    if hasattr(_app_module, "reset_disk"):
+        try:
+            with _flask_app.test_request_context():
+                _app_module.reset_disk()
+        except Exception:
+            pass
 
 
 # ================================================================
@@ -274,6 +284,95 @@ class AutomaticExpiryTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertLess(elapsed_ms, 200)
+
+
+class ProcessFailureInjectionTests(unittest.TestCase):
+    """Controlled worker failure simulation produces HTTP 500 and can be reset."""
+
+    def setUp(self):
+        self.client = _flask_app.test_client()
+        _reset_injection()
+
+    def tearDown(self):
+        _reset_injection()
+
+    def test_process_crash_returns_200_and_reports_pids(self):
+        resp = self.client.post("/stress/process/crash", json={"duration_s": 30})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("message", data)
+        self.assertIn("worker_pid", data)
+        self.assertIn("master_pid", data)
+
+    def test_health_returns_500_with_worker_failure_active(self):
+        self.client.post("/stress/process/crash", json={"duration_s": 30})
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 500)
+        data = resp.get_json()
+        self.assertEqual(data["status"], "unhealthy")
+        self.assertIn("crashed unexpectedly", data["error"])
+
+    def test_process_reset_restores_health(self):
+        self.client.post("/stress/process/crash", json={"duration_s": 30})
+        resp_crash = self.client.get("/health")
+        self.assertEqual(resp_crash.status_code, 500)
+
+        resp_reset = self.client.post("/stress/process/reset")
+        self.assertEqual(resp_reset.status_code, 200)
+
+        resp_health = self.client.get("/health")
+        self.assertEqual(resp_health.status_code, 200)
+        self.assertEqual(resp_health.get_json()["status"], "healthy")
+
+    def test_process_crash_auto_expires(self):
+        self.client.post("/stress/process/crash", json={"duration_s": 1})
+        self.assertTrue(_app_module.is_worker_failure_active())
+        time.sleep(1.2)
+        self.assertFalse(_app_module.is_worker_failure_active())
+        resp = self.client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+
+
+class DiskStressInjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.client = _flask_app.test_client()
+        _reset_injection()
+
+    def tearDown(self):
+        self.client.post("/stress/disk/reset")
+
+    def test_disk_fill_creates_file_in_dedicated_directory(self):
+        resp = self.client.post("/stress/disk/fill", json={"size_mb": 2, "duration_s": 30})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["size_mb"], 2)
+        self.assertIn("disk_stress_", data["file"])
+
+        resp_status = self.client.get("/stress/disk/status")
+        self.assertEqual(resp_status.status_code, 200)
+        status_data = resp_status.get_json()
+        self.assertTrue(status_data["active"])
+        self.assertGreaterEqual(status_data["total_mb"], 2.0)
+
+    def test_disk_fill_enforces_bounds(self):
+        resp = self.client.post("/stress/disk/fill", json={"size_mb": 500})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("between", resp.get_json()["error"])
+
+        resp_neg = self.client.post("/stress/disk/fill", json={"size_mb": 0})
+        self.assertEqual(resp_neg.status_code, 400)
+
+    def test_disk_reset_clears_test_artifacts(self):
+        self.client.post("/stress/disk/fill", json={"size_mb": 2})
+        resp_reset = self.client.post("/stress/disk/reset")
+        self.assertEqual(resp_reset.status_code, 200)
+        reset_data = resp_reset.get_json()
+        self.assertGreaterEqual(reset_data["reclaimed_mb"], 2.0)
+
+        resp_status = self.client.get("/stress/disk/status")
+        status_data = resp_status.get_json()
+        self.assertFalse(status_data["active"])
+        self.assertEqual(status_data["total_mb"], 0.0)
 
 
 if __name__ == "__main__":

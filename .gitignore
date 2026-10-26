@@ -1,6 +1,16 @@
 **/__pycache__/
 *.py[cod]
+*$py.class
 **/.pytest_cache/
 .venv/
 .env
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+scratch/
+
+
